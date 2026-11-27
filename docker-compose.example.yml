@@ -1,0 +1,29 @@
+# Add this service next to TeslaMate in its docker-compose.yml. It must reach
+# TeslaMate's Postgres (here the service `database`; adjust DB_HOST) and sit behind
+# an HTTPS reverse proxy that sets X-Real-IP (Caddy, Traefik, nginx-proxy, ...).
+services:
+  car-dash:
+    build: ./car-dash
+    image: car-dash:local
+    restart: unless-stopped
+    depends_on:
+      - database
+    environment:
+      - RP_ID=car.example.com                     # hostname the app is served on (required)
+      # - ORIGIN=https://car.example.com          # defaults to https://$RP_ID
+      - TZ=America/New_York                       # your time zone (month boundaries, times)
+      - DB_HOST=database                          # TeslaMate's Postgres service
+      # - DB_NAME=teslamate
+      - TESLAMATE_URL=https://teslamate.example.com   # optional: links to TeslaMate's web UI
+      # - MAP_TILES=https://tile.openstreetmap.org/{z}/{x}/{y}.png
+      # - MAP_CREDIT=© OpenStreetMap
+      - CAR_DASH_PASSWORD=${CAR_DASH_PASSWORD}
+      - CAR_DASH_SECRET=${CAR_DASH_SECRET}
+      - CAR_DASH_DB_PASSWORD=${CAR_DASH_DB_PASSWORD}
+      # - TESLA_CLIENT_ID=${TESLA_CLIENT_ID}
+      # - TESLA_CLIENT_SECRET=${TESLA_CLIENT_SECRET}
+    read_only: true
+    cap_drop:
+      - all
+    ports:
+      - "127.0.0.1:8000:8000"                     # for the reverse proxy on this host
