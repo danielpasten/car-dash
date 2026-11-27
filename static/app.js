@@ -613,6 +613,9 @@ const ICONS = {
   alert: 'M12 3.5 2.5 20h19zM12 10v4.5M12 17.5v.01',
   location: 'M3.5 11 20.5 3.5 13 20.5l-2-7.5z',
   leaf: 'M5 19c0-8.5 5.5-13.5 14.5-14-.5 9-5.5 14.5-14 14.5zM5 19l7.5-7.5',
+  check: 'M5 12.5l4.5 4.5L19 7.5',
+  bang: 'M12 6.5v7M12 17.5v.01',
+  dot: 'M12 12h.01',
 };
 function icon(name, cls = 'ico') {
   return s('svg', { class: cls, viewBox: '0 0 24 24', 'aria-hidden': 'true' }, s('path', { d: ICONS[name] }));
@@ -724,6 +727,7 @@ let liveTimer = null;
 
 async function carView() {
   const st = await load('/api/status');
+  if (st.onboarded === false) { setTimeout(() => location.replace('#/welcome')); return skeletonView(); }
   if (!st.car) return notConnected(st);
   const unit = st.units.length;
   const driving = st.activity === 'driving', charging = st.activity === 'charging';
@@ -1467,6 +1471,7 @@ async function accountView(_arg, params) {
         await mutate('/api/sessions/revoke', { method: 'POST' });
         toast('Other devices signed out');
       }, tileIcon('phone', 'blue'))),
+    group({ listCls: 'lead' }, cell({ href: '#/welcome', lead: tileIcon('check', 'green'), title: 'Setup guide' })),
     group({}, cell({ title: 'Sign out', cls: 'danger center', onclick: signOut })),
   ];
 }
@@ -1496,6 +1501,14 @@ const isIOS = () => /iPhone|iPad/.test(navigator.userAgent);
 async function currentSubscription() {
   const reg = await navigator.serviceWorker.ready;
   return reg.pushManager.getSubscription();
+}
+
+async function pushSubscribe(push) {
+  if (await Notification.requestPermission() !== 'granted') throw new Error('Notifications weren’t allowed.');
+  const reg = await navigator.serviceWorker.ready;
+  const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u.dec(push.public_key) });
+  const j = s.toJSON();
+  await mutate('/api/push/subscribe', { method: 'POST', body: { endpoint: j.endpoint, keys: j.keys, name: deviceName() } });
 }
 
 function notificationsGroup(push) {
@@ -1543,11 +1556,7 @@ function notificationsGroup(push) {
         return;
       }
       try {
-        if (await Notification.requestPermission() !== 'granted') throw new Error('Notifications weren’t allowed.');
-        const reg = await navigator.serviceWorker.ready;
-        const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u.dec(push.public_key) });
-        const j = s.toJSON();
-        await mutate('/api/push/subscribe', { method: 'POST', body: { endpoint: j.endpoint, keys: j.keys, name: deviceName() } });
+        await pushSubscribe(push);
         toast('Notifications on'); render({ quiet: true });
       } catch (x) { toast(x.message); sw.checked = false; sw.disabled = false; }
     });
@@ -1645,6 +1654,249 @@ function skeletonView() {
     h('div', { class: 'ghost', style: { width: '40%', height: '20px', marginTop: '16px' } })];
 }
 
+// ── Onboarding (#/welcome/<step>) ─────────────────────────────────────
+// First-run guide for a fresh install: what the app does, a check of the TeslaMate
+// connection, then the few things worth setting up. The server remembers once it's been
+// seen through (/api/onboarding); Settings › Setup guide runs it again.
+const OB_STEPS = ['hello', 'check', 'passkey', 'home', 'gas', 'device', 'done'];
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const obNext = (step) => `#/welcome/${OB_STEPS[Math.min(OB_STEPS.indexOf(step) + 1, OB_STEPS.length - 1)]}`;
+const obLink = (label, href, cls = 'btn block') => h('a', { class: cls, href }, label);
+const heroTile = (name, color) => h('span', { class: `ico-tile ${color}`, 'aria-hidden': 'true' },
+  name === 'faceid' ? h('span', { class: 'faceid' }) : icon(name));
+const obMark = (state) => h('span', { class: `ob-mark ${state}`, role: 'img',
+  'aria-label': { ok: 'Done', warn: 'Needs attention', info: 'Note' }[state] },
+icon({ ok: 'check', warn: 'bang', info: 'dot' }[state]));
+
+function obShell(step, { hero, title, sub, body, primary, secondary }) {
+  const i = OB_STEPS.indexOf(step);
+  return h('div', { class: 'ob' },
+    h('div', { class: 'ob-top' },
+      i > 0 && step !== 'done' ? h('a', { class: 'nav-back', href: `#/welcome/${OB_STEPS[i - 1]}`, 'aria-label': 'Back' }, icon('back'))
+        : h('span', { class: 'ob-spacer' }),
+      h('div', { class: 'ob-dots', role: 'img', 'aria-label': `Step ${i + 1} of ${OB_STEPS.length}` },
+        OB_STEPS.map((_, k) => h('i', { class: k === i ? 'on' : k < i ? 'past' : null }))),
+      h('span', { class: 'ob-spacer' })),
+    h('div', { class: 'ob-hero' }, hero),
+    h('h1', { class: 'ob-title' }, title),
+    sub && h('p', { class: 'ob-sub' }, sub),
+    body && h('div', { class: 'ob-body' }, body),
+    h('div', { class: 'ob-actions' }, primary, secondary));
+}
+
+async function obFinish() {
+  await mutate('/api/onboarding', { method: 'POST', body: { done: true } }).catch(() => {});
+  location.hash = '#/car';
+}
+
+async function welcomeView(step, params) {
+  step = OB_STEPS.includes(step) ? step : 'hello';
+  const fn = { hello: obHello, check: obCheck, passkey: obPasskey, home: obHome, gas: obGas, device: obDevice, done: obDone }[step];
+  return [await fn(step, params)];
+}
+
+function obHello(step) {
+  return obShell(step, {
+    hero: h('img', { class: 'ob-icon', src: '/icons/icon-180-v4.png', alt: '' }),
+    title: 'Welcome to Car',
+    sub: 'Your TeslaMate data, made for your phone. A few quick steps and you’re set.',
+    body: group({ listCls: 'lead' },
+      cell({ lead: tileIcon('bolt', 'green'), title: 'Charging costs', sub: 'What every charge cost, by place' }),
+      cell({ lead: tileIcon('road', 'blue'), title: 'Drives', sub: 'Routes colored by efficiency' }),
+      cell({ lead: tileIcon('battery', 'green'), title: 'Battery health', sub: 'Range at 100% over time' })),
+    primary: obLink('Get started', obNext(step)),
+    secondary: h('button', { class: 'btn plain block', type: 'button', onclick: obFinish }, 'Skip setup'),
+  });
+}
+
+async function obCheck(step) {
+  const s = await load('/api/setup');
+  const row = (state, title, sub) => cell({ lead: obMark(state), title, sub });
+  const p = s.permissions || {};
+  const missing = [!p.places && 'places', !p.costs && 'charge costs', !p.drives && 'drives'].filter(Boolean);
+  const hostOk = location.hostname === s.rp_id;
+  const u = s.units.length;
+  const rows = [
+    s.car ? row('ok', `Found ${s.car.name}`, [s.cars > 1 && `${s.cars} cars`, s.car.odometer != null && `${num(s.car.odometer)} ${u}`].filter(Boolean).join(' · ') || 'In TeslaMate')
+      : row('warn', 'No car yet', 'Sign in to TeslaMate with your Tesla account. The car shows up within a minute.'),
+    s.car && (s.last_seen
+      ? row(s.stale ? 'warn' : 'ok', s.stale ? `Quiet since ${dayLabel(s.last_seen)}` : 'Receiving data',
+        s.stale ? 'Fine if the car is parked. If it’s been driven, TeslaMate may be signed out.' : `Last update ${ago(s.last_seen)}`)
+      : row('warn', 'No data yet', 'TeslaMate hasn’t recorded anything for this car.')),
+    s.counts.drives || s.counts.charges
+      ? row('ok', 'History', `${num(s.counts.drives)} drives · ${num(s.counts.charges)} charges`)
+      : row('info', 'No history yet', 'Drives and charges show up as TeslaMate records them.'),
+    missing.length ? row('warn', 'Read-only', `The car_dash database role can’t change ${missing.join(', ')}. Run setup.sql again.`)
+      : row('ok', 'Can edit places and costs', 'Database permissions look right'),
+    hostOk ? row('ok', 'Passkeys ready', `Bound to ${s.rp_id}`)
+      : row('warn', 'Passkeys won’t work here', `RP_ID is ${s.rp_id}, but this page is ${location.hostname}.`),
+    row('info', `${u === 'mi' ? 'Miles' : 'Kilometres'} and °${s.units.temp}`, 'From TeslaMate’s settings'),
+  ];
+  const problems = !s.car || missing.length || !hostOk;
+  return obShell(step, {
+    hero: heroTile('server', problems ? 'orange' : 'green'),
+    title: problems ? 'Almost connected' : 'Connected to TeslaMate',
+    sub: problems ? 'A few things need attention. You can carry on and fix them later.' : 'Everything Car needs is in place.',
+    body: group({ listCls: 'lead' }, rows),
+    primary: obLink('Continue', obNext(step)),
+    secondary: problems && s.teslamate_url && h('a', { class: 'btn plain block', href: s.teslamate_url, target: '_blank', rel: 'noopener' }, 'Open TeslaMate'),
+  });
+}
+
+async function obPasskey(step) {
+  const { passkeys } = await load('/api/passkeys');
+  const add = (label, cls) => {
+    const b = h('button', { class: cls, type: 'button', onclick: async () => {
+      b.disabled = true;
+      try { await passkeyAdd(); toast('Passkey added'); render({ quiet: true }); }
+      catch (x) { toast(x.message); b.disabled = false; }
+    } }, label);
+    return b;
+  };
+  if (!hasPasskeys()) {
+    return obShell(step, { hero: heroTile('faceid', 'gray'), title: 'Passkeys',
+      sub: 'This browser can’t use passkeys, so you’ll sign in with the password here.',
+      primary: obLink('Continue', obNext(step)) });
+  }
+  if (passkeys.length) {
+    return obShell(step, { hero: heroTile('faceid', 'green'), title: 'Face ID is set up',
+      sub: `${passkeys.length} passkey${passkeys.length > 1 ? 's' : ''} saved. The password still works as a backup.`,
+      primary: obLink('Continue', obNext(step)), secondary: add('Add this device too', 'btn plain block') });
+  }
+  return obShell(step, { hero: heroTile('faceid', 'green'), title: 'Sign in with Face ID',
+    sub: 'Add a passkey on this device and you won’t need the password. It keeps working as a backup.',
+    primary: add('Add passkey', 'btn block'), secondary: obLink('Not now', obNext(step), 'btn plain block') });
+}
+
+async function obHome(step, params) {
+  const data = await load('/api/places');
+  placeOrder = data.places.map((p) => p.name);
+  const home = data.places.find((p) => /home/i.test(p.name));
+  if (home && params?.get('new') !== '1') {
+    return obShell(step, { hero: heroTile('pin', 'blue'), title: 'Home charging',
+      sub: 'Your places already have prices, so charges there get a cost on their own.',
+      body: group({ listCls: 'dots' }, data.places.slice(0, 4).map((p) => cell({ href: `#/place/${p.id}`,
+        lead: h('span', { class: `dot ${placeClass(p.name, 'geofence')}`, 'aria-hidden': 'true' }), title: p.name, sub: priceShort(p) }))),
+      primary: obLink('Continue', obNext(step)),
+      secondary: obLink('Add another place', '#/welcome/home?new=1', 'btn plain block') });
+  }
+  // Start where most charging happened (a place not saved yet), else where the car is.
+  const sug = [...data.suggestions].sort((a, b) => b.kwh - a.kwh)[0];
+  const car = data.car_position;
+  const start = sug || car;
+  const title = home ? 'Add a place' : 'Home charging';
+  const sub = 'Set what charging costs here. Every charge at this spot, past and future, gets a cost.';
+  if (!start) {
+    return obShell(step, { hero: heroTile('pin', 'blue'), title, sub: 'There’s no location from the car yet. Add places later from the Places tab.',
+      primary: obLink('Continue', obNext(step)) });
+  }
+  const st = { lat: start.lat, lon: start.lon };
+  const map = placeMap({ lat: st.lat, lon: st.lon, radius: 75, car, onMove: (p) => { st.lat = p.lat; st.lon = p.lon; } });
+  const nameIn = h('input', { type: 'text', id: 'ob-name', maxlength: 60, value: home ? '' : 'Home', placeholder: home ? 'Work' : 'Home', autocomplete: 'off' });
+  const rateIn = autoWidth(h('input', { type: 'number', inputmode: 'decimal', step: '0.001', min: '0', id: 'ob-rate', placeholder: '0.15' }));
+  const err = h('p', { class: 'error', role: 'alert' });
+  const save = h('button', { class: 'btn block', type: 'submit', form: 'ob-home' }, 'Save');
+  const form = h('form', { id: 'ob-home', onsubmit: async (e) => {
+    e.preventDefault(); err.textContent = '';
+    const name = nameIn.value.trim(), rate = rateIn.value === '' ? null : Number(rateIn.value);
+    if (!name) { err.textContent = 'Give the place a name.'; nameIn.focus(); return; }
+    if (rate == null || Number.isNaN(rate) || rate < 0) { err.textContent = 'Enter the price per kWh, like 0.15 (0 if it’s free).'; rateIn.focus(); return; }
+    save.disabled = true;
+    try {
+      await mutate('/api/places', { method: 'POST', body: { name, lat: st.lat, lon: st.lon, radius: 75, billing: 'per_kwh', rate, fee: null, reprice: true } });
+      toast(`${name} saved`);
+      location.hash = obNext(step);
+    } catch (x) { err.textContent = x.message; save.disabled = false; }
+  } },
+  group({},
+    h('li', null, h('label', { class: 'cell field', for: 'ob-name' }, h('span', { class: 'cell-title' }, 'Name'), nameIn)),
+    h('li', null, h('label', { class: 'cell field', for: 'ob-rate' }, h('span', { class: 'cell-title' }, 'Price'),
+      h('span', { class: 'money-in' }, rateIn), h('span', { class: 'unit' }, '/kWh')))),
+  h('section', { class: 'grp' },
+    h('div', { class: 'map-card' }, map.el,
+      car && sug && h('button', { type: 'button', class: 'map-btn', onclick: () => map.moveTo(car) }, icon('location'), 'Car’s location')),
+    h('p', { class: 'grp-foot' }, sug ? 'Placed where you’ve charged most. Drag the map to adjust.' : 'Placed where the car is now. Drag the map to adjust.')),
+  err);
+  return obShell(step, { hero: heroTile('pin', 'blue'), title, sub, body: form, primary: save,
+    secondary: obLink(home ? 'Done' : 'I don’t charge at home', obNext(step), 'btn plain block') });
+}
+
+async function obGas(step) {
+  const g = await load('/api/settings/gas');
+  const mi = g.units.length === 'mi';
+  const price = autoWidth(h('input', { type: 'number', inputmode: 'decimal', step: '0.01', min: '0', id: 'ob-gprice', value: g.price ?? '', placeholder: mi ? '3.29' : '1.75' }));
+  const econ = h('input', { type: 'number', inputmode: 'decimal', step: '0.1', min: '1', id: 'ob-gecon', value: g.economy ?? '', placeholder: mi ? '28' : '8.5' });
+  const err = h('p', { class: 'error', role: 'alert' });
+  const save = h('button', { class: 'btn block', type: 'submit', form: 'ob-gas' }, 'Save');
+  const form = h('form', { id: 'ob-gas', onsubmit: async (e) => {
+    e.preventDefault(); err.textContent = '';
+    const body = { price: price.value === '' ? null : Number(price.value), economy: econ.value === '' ? null : Number(econ.value) };
+    if (body.price == null || body.economy == null) { err.textContent = 'Enter both, or skip this step.'; return; }
+    save.disabled = true;
+    try { await mutate('/api/settings/gas', { method: 'PUT', body }); location.hash = obNext(step); }
+    catch (x) { err.textContent = x.message; save.disabled = false; }
+  } },
+  group({ listCls: 'lead', foot: 'Use your old car’s figures, or a typical one.' },
+    h('li', null, h('label', { class: 'cell field', for: 'ob-gprice' }, tileIcon('fuel', 'orange'),
+      h('span', { class: 'cell-title' }, 'Gas price'), h('span', { class: 'money-in' }, price), h('span', { class: 'unit' }, mi ? '/gal' : '/L'))),
+    h('li', null, h('label', { class: 'cell field', for: 'ob-gecon' }, tileIcon('gauge', 'orange'),
+      h('span', { class: 'cell-title' }, mi ? 'Mileage' : 'Consumption'), econ, h('span', { class: 'unit' }, mi ? 'mpg' : 'L/100 km')))),
+  err);
+  return obShell(step, { hero: heroTile('fuel', 'orange'), title: 'Compare with gas',
+    sub: 'See what the same miles would have cost in a gas car, every month.',
+    body: form, primary: save, secondary: obLink('Skip', obNext(step), 'btn plain block') });
+}
+
+async function obDevice(step) {
+  const next = obLink('Continue', obNext(step));
+  if (isIOS() && !isStandalone()) {
+    return obShell(step, { hero: heroTile('phone', 'blue'), title: 'Add to Home Screen',
+      sub: 'Car works best as an app: full screen, Face ID and charge notifications.',
+      body: h('ol', { class: 'ob-steps' },
+        h('li', null, 'Tap ', h('b', null, 'Share'), ' in Safari'),
+        h('li', null, 'Choose ', h('b', null, 'Add to Home Screen')),
+        h('li', null, 'Open Car from your Home Screen')),
+      primary: next });
+  }
+  if (!pushSupported()) {
+    return obShell(step, { hero: heroTile('bell', 'gray'), title: 'Notifications',
+      sub: 'This browser can’t show notifications from Car.', primary: next });
+  }
+  const push = await load('/api/push');
+  const subscribed = await currentSubscription().catch(() => null);
+  if (subscribed) {
+    return obShell(step, { hero: heroTile('bell', 'red'), title: 'Notifications are on', sub: 'This device gets charge alerts.', primary: next });
+  }
+  if (Notification.permission === 'denied') {
+    return obShell(step, { hero: heroTile('bell', 'gray'), title: 'Notifications are blocked',
+      sub: 'Allow them for this site in the browser’s settings to get charge alerts.', primary: next });
+  }
+  const on = h('button', { class: 'btn block', type: 'button', onclick: async () => {
+    on.disabled = true;
+    try { await pushSubscribe(push); toast('Notifications on'); location.hash = obNext(step); }
+    catch (x) { toast(x.message); on.disabled = false; }
+  } }, 'Turn on notifications');
+  return obShell(step, { hero: heroTile('bell', 'red'), title: 'Charge alerts',
+    sub: 'Get a notification when a charge ends somewhere you haven’t saved, so you can name it and set its price.',
+    primary: on, secondary: obLink('Not now', obNext(step), 'btn plain block') });
+}
+
+async function obDone(step) {
+  // Seeing this screen counts as finished, so links from here don't bring the guide back.
+  if (!(await load('/api/status')).onboarded) await mutate('/api/onboarding', { method: 'POST', body: { done: true } }).catch(() => {});
+  const [{ passkeys }, places, gas] = await Promise.all([load('/api/passkeys'), load('/api/places'), load('/api/settings/gas')]);
+  const pushOn = pushSupported() && !!(await currentSubscription().catch(() => null));
+  const item = (on, title, subOn, subOff, href) => cell({ lead: obMark(on ? 'ok' : 'info'), title, sub: on ? subOn : subOff, href: on ? null : href });
+  return obShell(step, { hero: heroTile('check', 'green'), title: 'You’re all set',
+    sub: 'Anything you skipped is in Settings and Places whenever you want it.',
+    body: group({ listCls: 'lead' },
+      item(passkeys.length, 'Face ID', 'Passkey saved', 'Add a passkey in Settings', '#/account'),
+      item(places.places.length, 'Places', `${places.places.length} saved with prices`, 'Add them from the Places tab', '#/places'),
+      item(gas.price != null && gas.economy != null, 'Gas comparison', 'On', 'Set it up in Settings', '#/account'),
+      item(pushOn, 'Notifications', 'On for this device', 'Turn on in Settings', '#/account')),
+    primary: h('button', { class: 'btn block', type: 'button', onclick: obFinish }, 'Open Car') });
+}
+
 // ── Toast ─────────────────────────────────────────────────────────────
 let toastEl = null;
 function toast(text) {
@@ -1658,10 +1910,15 @@ function toast(text) {
 
 // ── Router ────────────────────────────────────────────────────────────
 const ROUTES = { car: carView, charging: chargingView, charge: chargeView, drives: drivesView, drive: driveView,
-  places: placesView, place: placeForm, account: accountView, battery: batteryView };
+  places: placesView, place: placeForm, account: accountView, battery: batteryView, welcome: welcomeView };
 const DEPTH = { charge: 1, place: 1, account: 1, drive: 1, battery: 1 };
 const TAB_OF = { charge: 'charging', place: 'places', account: 'car', drive: 'drives', battery: 'car' };
 let lastRoute = null;
+
+function showTabs(on) {
+  tabs.hidden = !on;
+  document.body.classList.toggle('no-tabs', !on);
+}
 
 function parseHash() {
   const [path, query = ''] = (location.hash || '#/car').slice(2).split('?');
@@ -1699,17 +1956,17 @@ async function render({ quiet = false, direction = null } = {}) {
   try {
     const nodes = await build(r);
     const stale = staleReads.slice();
-    tabs.hidden = false;
+    showTabs(r.name !== 'welcome');
     await swap(nodes, quiet ? null : direction);
     if (quiet) window.scrollTo(0, scroll);
     if (stale.length) revalidate(r.key, stale);
   } catch (e) {
     if (e instanceof SignedOut) {
-      tabs.hidden = true;
+      showTabs(false);
       await swap(signInView(), null);
       document.getElementById('pw')?.focus();
     } else {
-      tabs.hidden = false;      // keep the tabs so a failed first load isn't a dead end
+      showTabs(true);           // keep the tabs so a failed first load isn't a dead end
       await swap([h('div', { class: 'card', style: { marginTop: '20vh' } }, h('div', { class: 'empty-state' }, icon('alert'),
         h('div', { class: 'title' }, 'Couldn’t load this page'),
         h('p', null, e.message),
@@ -1749,6 +2006,10 @@ function route() {
   if (lastRoute) {
     const a = DEPTH[lastRoute.name] || 0, b = DEPTH[r.name] || 0;
     direction = b > a ? 'push' : b < a ? 'pop' : (lastRoute.name === r.name ? null : 'tab');
+    if (r.name === 'welcome' && lastRoute.name === 'welcome') {      // guide steps slide like a stack
+      const i = OB_STEPS.indexOf(r.arg || 'hello'), j = OB_STEPS.indexOf(lastRoute.arg || 'hello');
+      direction = i > j ? 'push' : i < j ? 'pop' : null;
+    }
   } else direction = null;
   if (!lastRoute || lastRoute.key !== r.key) window.scrollTo(0, 0);
   lastRoute = r;

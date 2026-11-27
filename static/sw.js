@@ -1,7 +1,7 @@
 // App shell: cache-first (versioned). API: network-first, falling back to the
 // last good response so the app still opens without signal (e.g. in a garage).
-const VERSION = 'car-v10';
-const SHELL = ['/', '/index.html', '/style.css?v=10', '/app.js?v=10',
+const VERSION = 'car-v11';
+const SHELL = ['/', '/index.html', '/style.css?v=11', '/app.js?v=11',
   '/manifest.webmanifest', '/icons/icon-192-v4.png'];
 
 self.addEventListener('install', (e) => {

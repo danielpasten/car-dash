@@ -728,3 +728,51 @@ html[data-nav="tab"]::view-transition-new(root)  { animation: vt-fade-in 0.2s ea
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ── Onboarding (#/welcome) ───────────────────────────────── */
+
+body.no-tabs #view { padding-bottom: calc(env(safe-area-inset-bottom) + 20px); }
+.ob {
+  display: flex; flex-direction: column;
+  min-height: calc(100dvh - env(safe-area-inset-top) - 8px - env(safe-area-inset-bottom) - 20px);
+}
+.ob-top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; min-height: 44px; margin: 0 -8px; }
+.ob-top .nav-back { justify-self: start; }
+.ob-spacer { display: block; }
+.ob-dots { display: flex; gap: 6px; }
+.ob-dots i { width: 7px; height: 7px; border-radius: 4px; background: var(--fill-2); transition: width 0.25s, background-color 0.25s; }
+.ob-dots i.past { background: color-mix(in srgb, var(--accent) 45%, var(--fill-2)); }
+.ob-dots i.on { width: 20px; background: var(--accent); }
+.ob-hero { margin: 20px 0 16px; }
+.ob-hero .ico-tile { width: 64px; height: 64px; border-radius: 15px; }
+.ob-hero .ico-tile .ico { width: 36px; height: 36px; stroke-width: 1.9; }
+.ob-hero .ico-tile .faceid { width: 36px; height: 36px; }
+.ob-icon { width: 76px; height: 76px; border-radius: 17px; display: block; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
+.ob-title { font-size: 34px; line-height: 41px; font-weight: 700; letter-spacing: 0.01em; }
+.ob-sub { font-size: 17px; line-height: 23px; color: var(--label-2); margin-top: 8px; }
+.ob-body { margin-top: 24px; }
+.ob-body .grp:first-child { margin-top: 0; }
+.ob .cell-sub { white-space: normal; }
+.ob .map { height: 200px; }
+.ob-actions { display: grid; gap: 4px; margin-top: auto; padding-top: 24px; }
+.btn.plain { background: none; color: var(--accent); min-height: 44px; font-weight: 400; }
+.ob-mark {
+  width: 26px; height: 26px; flex: none; border-radius: 50%;
+  display: grid; place-items: center; color: #fff;
+}
+.ob-mark .ico { width: 16px; height: 16px; stroke-width: 2.8; }
+.ob-mark.ok { background: var(--switch-on); }
+.ob-mark.warn { background: #ff9500; }
+.ob-mark.info { background: var(--fill-2); color: var(--label-2); }
+.ob-mark.info .ico { stroke-width: 6; }
+.list.lead .ob-mark { margin: 0 1.5px; }
+.ob-steps { list-style: none; counter-reset: step; display: grid; gap: 10px; }
+.ob-steps li {
+  counter-increment: step; display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px; border-radius: var(--r); background: var(--card); box-shadow: var(--shadow); font-size: 17px;
+}
+.ob-steps li::before {
+  content: counter(step); width: 28px; height: 28px; flex: none; border-radius: 50%;
+  display: grid; place-items: center; background: var(--tint); color: var(--accent); font-weight: 600; font-size: 15px;
+}
+.ob-steps b { font-weight: 600; }

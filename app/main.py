@@ -94,6 +94,7 @@ def _open_pool():
     with pool.connection() as conn:
         conn.execute(SCHEMA)
     _load_not_before()
+    _adopt_existing_install()
 
 
 @app.on_event("startup")
@@ -611,13 +612,77 @@ def miles_between(car, start, end, u):
     return dist(r["km"], u)
 
 
+# ── Onboarding ────────────────────────────────────────────────────────
+# A first-run guide (static/app.js, #/welcome) runs until it's finished once.
+
+def onboarded() -> bool:
+    return state_get("onboarded") is not None
+
+
+def _adopt_existing_install():
+    """Installs from before the guide existed skip it: anything the owner already set up counts."""
+    if onboarded():
+        return
+    used = q1("select (select count(*) from car_dash.passkeys) + (select count(*) from car_dash.push_subscriptions)"
+              " + (select count(*) from car_dash.manual_costs)"
+              " + (select count(*) from car_dash.app_state where key in ('gas', 'tesla')) as n")
+    if used and used["n"]:
+        state_set("onboarded", {"at": time.time(), "adopted": True})
+
+
+@app.get("/api/setup")
+def setup_check():
+    """What the guide's connection check shows: is TeslaMate's data there, and can we use it?"""
+    u = units()
+    c, cars = pick_car(None)
+    perms = q1("select has_table_privilege('geofences', 'INSERT') and has_table_privilege('geofences', 'UPDATE')"
+               "       and has_sequence_privilege('geofences_id_seq', 'USAGE') as places,"
+               " has_column_privilege('charging_processes', 'cost', 'UPDATE') as costs,"
+               " has_column_privilege('drives', 'start_geofence_id', 'UPDATE') as drives")
+    counts = q1("select (select count(*) from drives) as drives, (select count(*) from charging_processes) as charges")
+    last, odo = None, None
+    if c:
+        pos = q1("select date, odometer from positions where car_id = %s order by date desc limit 1", c["id"])
+        last_cp = q1("select max(coalesce(end_date, start_date)) as t from charging_processes where car_id = %s", c["id"])
+        seen = [t for t in ((pos or {}).get("date"), (last_cp or {}).get("t")) if t]
+        last = max(seen) if seen else None
+        odo = pos and dist(pos["odometer"], u)
+    return {
+        "car": c and {"name": c["name"] or (f"Model {c['model']}" if c["model"] else c["marketing_name"] or "Car"),
+                      "odometer": odo},
+        "cars": len(cars),
+        "last_seen": local(last),
+        "stale": bool(last) and (datetime.now(timezone.utc).replace(tzinfo=None) - last).total_seconds() > STALE_HOURS * 3600,
+        "counts": counts,
+        "permissions": perms,
+        "units": u,
+        "rp_id": RP_ID,
+        "teslamate_url": TESLAMATE_URL,
+        "onboarded": onboarded(),
+    }
+
+
+class OnboardingIn(BaseModel):
+    done: bool
+
+
+@app.post("/api/onboarding")
+def onboarding_set(body: OnboardingIn):
+    if body.done:
+        state_set("onboarded", {"at": time.time()})
+    else:
+        with pool.connection() as conn:
+            conn.execute("delete from car_dash.app_state where key = 'onboarded'")
+    return {"onboarded": body.done}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────
 
 @app.get("/api/status")
 def status(car: int | None = None):
     u = units()
     c, cars = pick_car(car)
-    base = {"teslamate_url": TESLAMATE_URL, "units": u}
+    base = {"teslamate_url": TESLAMATE_URL, "units": u, "onboarded": onboarded()}
     if not c:
         return {**base, "car": None, "cars": []}
 

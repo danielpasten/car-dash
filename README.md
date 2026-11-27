@@ -51,8 +51,11 @@ hand-built SVG charts and OpenStreetMap tiles on the phone. TeslaMate itself is 
    app's hostname.
 4. **Proxy.** Point your HTTPS hostname at port 8000 and make sure the proxy sets `X-Real-IP`
    (used to rate-limit wrong passwords per client).
-5. `docker compose up -d --build car-dash`, open the site, sign in with the password, and
-   add a passkey on the Settings screen. On iPhone: Share › Add to Home Screen.
+5. `docker compose up -d --build car-dash`, open the site and sign in with the password. A short
+   setup guide checks the connection to TeslaMate (car, recent data, database permissions,
+   `RP_ID`) and walks you through a passkey, your home charging price, the gas comparison and
+   notifications. Run it again any time from Settings › Setup guide. On iPhone, add the app to
+   the Home Screen (Share › Add to Home Screen) for Face ID, notifications and full screen.
 
 ### Settings
 

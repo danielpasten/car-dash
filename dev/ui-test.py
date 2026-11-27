@@ -72,15 +72,63 @@ try:
       q('#pw').value = 'definitely-wrong'; q('.signin form').requestSubmit();
       const err = await wait(() => q('.signin .error').textContent);
       q('#pw').value = arguments[0]; q('.signin form').requestSubmit();
-      const ok = await wait(() => q('.car-hero'));
-      return JSON.stringify({err, ok: !!ok, tabs: !q('#tabs').hidden});""", os.environ["PW"])
-    d = json.loads(r); check("sign-in: wrong password shows error", d["err"], r); check("sign-in: password opens Car with tabs", d["ok"] and d["tabs"], r)
+      const ok = await wait(() => q('.car-hero') || q('.ob'));
+      return JSON.stringify({err, ok: !!ok});""", os.environ["PW"])
+    d = json.loads(r); check("sign-in: wrong password shows error", d["err"], r); check("sign-in: password opens the app", d["ok"], r)
 
-    # reset demo state from earlier runs: no passkeys, banner not dismissed
+    # reset demo state from earlier runs: no passkeys, banner not dismissed, guide not finished
     run("""const {passkeys} = await (await fetch('/api/passkeys')).json();
       for (const k of passkeys) await fetch('/api/passkeys/' + k.id, {method: 'DELETE'});
-      localStorage.removeItem('passkey-nudge'); location.reload(); return passkeys.length;""")
+      await fetch('/api/onboarding', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({done: false})});
+      localStorage.removeItem('passkey-nudge'); location.hash = '#/car'; location.reload(); return passkeys.length;""")
     time.sleep(2.5)
+
+    # 1b. Onboarding: a fresh install lands in the guide; walk every step
+    # remember the step on screen so waits can tell when the next one has replaced it
+    TAP = "window._old = q('.ob'); byText('.ob-actions a, .ob-actions button', %s).click();"
+    r = run("""const t = await wait(() => q('.ob-title')); return JSON.stringify({hash: location.hash, title: t.textContent,
+      tabs: q('#tabs').hidden, dots: qa('.ob-dots i').length});""")
+    d = json.loads(r); check("onboarding: fresh install opens the guide, no tab bar", d["title"] == "Welcome to Car" and d["tabs"] and d["dots"] == 7, r)
+    r = run(TAP % "'Get started'" + """await wait(() => q('.ob') !== window._old && location.hash === '#/welcome/check' && qa('.ob-mark').length >= 5);
+      return JSON.stringify({title: q('.ob-title').textContent, warn: qa('.ob-mark.warn').length,
+        rows: qa('.ob .cell-title').map(e => e.textContent)});""")
+    d = json.loads(r); check("onboarding: connection check all clear on the demo", d["title"] == "Connected to TeslaMate" and d["warn"] == 0, r)
+    r = run(TAP % "'Continue'" + """await wait(() => q('.ob') !== window._old && location.hash === '#/welcome/passkey' && q('.ob-title'));
+      const title = q('.ob-title').textContent; """ + TAP % "'Not now'" + """
+      await wait(() => q('.ob') !== window._old && location.hash === '#/welcome/home' && q('.ob-title'));
+      return JSON.stringify({title, home: q('.ob-title').textContent, listed: qa('.ob .cell-title').map(e => e.textContent)});""")
+    d = json.loads(r); check("onboarding: passkey step offers Face ID, Not now skips", d["title"] == "Sign in with Face ID", r)
+    check("onboarding: existing Home is recognised", d["home"] == "Home charging" and "Home" in d["listed"], r)
+    r = run(TAP % "'Add another place'" + """await wait(() => q('#ob-rate'));
+      q('#ob-name').value = 'Flow Home'; q('#ob-rate').value = ''; q('.ob-actions button[type=submit]').click();
+      const err = await wait(() => q('.ob .error').textContent);
+      q('#ob-rate').value = '0.21'; q('.ob-actions button[type=submit]').click();
+      const t = await wait(() => toastText().includes('saved') && toastText());
+      await wait(() => q('.ob') !== window._old && location.hash === '#/welcome/gas');
+      const places = await (await fetch('/api/places')).json(); const p = places.places.find(x => x.name === 'Flow Home');
+      if (p) await fetch('/api/places/' + p.id, {method: 'DELETE'});
+      return JSON.stringify({err, toast: t, rate: p && p.rate, hash: location.hash});""")
+    d = json.loads(r); check("onboarding: place form validates, saves, moves on", d["err"] and d["toast"] and d["rate"] == 0.21 and d["hash"] == "#/welcome/gas", r)
+    r = run("""await wait(() => q('#ob-gprice')); q('#ob-gprice').value = '3.29'; q('#ob-gecon').value = '28';
+      window._old = q('.ob'); q('.ob-actions button[type=submit]').click(); await wait(() => q('.ob') !== window._old && location.hash === '#/welcome/device' && q('.ob-title'));
+      const title = q('.ob-title').textContent; """ + TAP % "title === 'Charge alerts' ? 'Not now' : 'Continue'" + """
+      await wait(() => q('.ob') !== window._old && location.hash === '#/welcome/done' && q('.ob-mark'));
+      const g = await (await fetch('/api/settings/gas')).json();
+      return JSON.stringify({gas: [g.price, g.economy], device: title, done: q('.ob-title').textContent,
+        marks: qa('.ob-mark').map(m => m.className.split(' ')[1])});""")
+    d = json.loads(r)
+    check("onboarding: gas step saves", d["gas"] == [3.29, 28], r)
+    check("onboarding: summary shows what's set up", d["done"] == "You’re all set" and d["marks"][0] == "info" and d["marks"][1:3] == ["ok", "ok"], r)
+    r = run(TAP % "'Open Car'" + """const home = await wait(() => q('.car-hero'));
+      const st = await (await fetch('/api/status')).json(); return JSON.stringify({home: !!home, tabs: !q('#tabs').hidden, onboarded: st.onboarded});""")
+    d = json.loads(r); check("onboarding: finishing opens Car with tabs and stays finished", d["home"] and d["tabs"] and d["onboarded"], r)
+    go("#/account")
+    r = run("""const a = await wait(() => byText('a.cell', 'Setup guide')); a.click();
+      const t = await wait(() => location.hash === '#/welcome' && q('.ob-title'));
+      location.hash = '#/car'; const home = await wait(() => q('.car-hero'));
+      return JSON.stringify({guide: t && t.textContent, home: !!home});""")
+    d = json.loads(r); check("settings: Setup guide reopens it; Car no longer redirects", d["guide"] == "Welcome to Car" and d["home"], r)
+
     # 2. Car home pieces
     r = run("""await wait(() => q('.tiles'));
       return JSON.stringify({tiles: qa('.tile').length, links: qa('a.tile').map(a => a.getAttribute('href')),

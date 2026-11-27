@@ -5,7 +5,8 @@ usage: PW=<password> dev/screenshot.py <outdir> 390 844 name=#/route [name=#/rou
   BASE=http://127.0.0.1:18000   app to shoot
   GECKODRIVER=geckodriver       driver binary (Ubuntu's snap: /snap/bin/geckodriver)
   PREVIEW_FONT=/path/Inter.ttf  optional stand-in for SF Pro (the app uses the system font)
-  DPR=2.0                       device pixel ratio of the PNGs"""
+  DPR=2.0                       device pixel ratio of the PNGs
+  UA=...                        optional user agent override (iOS-only screens)"""
 import base64, json, os, shutil, subprocess, sys, time, urllib.request
 
 BASE = os.environ.get("BASE", "http://127.0.0.1:18000")
@@ -50,6 +51,8 @@ try:
     # Firefox won't make a window narrower than ~500px, so render at 2x and size the window
     # in device pixels: an iPhone-width 390 CSS px viewport, crisp @2x screenshots.
     prefs["layout.css.devPixelsPerPx"] = os.environ.get("DPR", "2.0")
+    if os.environ.get("UA"):          # e.g. an iPhone Safari user agent, to see iOS-only screens
+        prefs["general.useragent.override"] = os.environ["UA"]
     sess = call("POST", "/session", {"capabilities": {"alwaysMatch": {"moz:firefoxOptions": {
         "args": ["-headless"], "prefs": prefs}}}})
     sid = sess["sessionId"]
